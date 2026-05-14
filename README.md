@@ -43,7 +43,7 @@ To reload the Set Anger server config without restarting:
 /sa reloadconfig
 ```
 
-The reload command reports the exact TOML file it loaded. Set Anger only uses the server's `config/set_anger.toml`; world `serverconfig` copies are ignored.
+The reload command reports `Reloaded Set Anger configuration.` on success. Set Anger only uses the server's `config/set_anger.toml`; world `serverconfig` copies are ignored.
 
 ## What It Does
 
@@ -113,6 +113,8 @@ This is in the normal NeoForge config folder for the running server. The config 
 Example:
 
 ```toml
+debug = false
+
 [relations]
 updateAttackerOnBlockedDamage = true
 enableExecuteOnVictim = true
@@ -134,6 +136,11 @@ The relation options are:
 
 - `updateAttackerOnBlockedDamage`: when true, blocked shield damage updates the defender's recent attacker so vanilla `execute on attacker` can work from advancement reward functions even if the damage was fully blocked.
 - `enableExecuteOnVictim`: when true, Set Anger's `execute on victim` relation resolves to the source entity's recent victim. When false, the command relation remains in the command tree but resolves to no entity, so the setting can be changed with `/setanger reloadconfig`.
+
+The root `debug` option controls command success feedback for non-reload Set Anger commands:
+
+- `debug = false`: default. Commands stay quiet on success, which avoids noisy datapack skill output and latest.log entries.
+- `debug = true`: command success feedback is sent to the command source only. It is not broadcast to all operators.
 
 The tags are empty by default and are intended for datapacks and modpacks. They make modded entity support explicit without hard-coding another mod's classes. For example, a datapack can classify a modded mob as neutral:
 
@@ -197,6 +204,117 @@ execute on victim run effect give @s minecraft:glowing 3 0 true
 ```
 
 These relations depend on Minecraft's recent combat tracking. If there is no recent attacker or victim, the `execute on ...` branch simply has no entity to run as.
+
+Set Anger also adds inverse target helpers:
+
+```mcfunction
+execute on targeting run ...
+execute on targeting_near <max_blocks> run ...
+```
+
+These execute the rest of the command chain as every loaded mob whose current AI target is the current command source entity. `targeting_near` keeps only mobs within the given number of blocks. To use a selected entity, switch the command source first with vanilla `execute as`.
+
+Examples:
+
+```mcfunction
+execute on targeting run effect give @s minecraft:glowing 2 0 true
+execute on targeting_near 8 run effect give @s minecraft:glowing 2 0 true
+execute as @a run execute on targeting_near 16 run damage @s 2 minecraft:generic
+```
+
+This uses the mob's live `getTarget()` value, so it works with vanilla AI, `/setanger`, and other mods that set the mob's normal AI target.
+
+## Scaled Skill Commands
+
+Set Anger also adds server-side commands for datapacks that need to use a live attribute or score value directly in an effect. These commands require permission level 2 and work well inside advancement reward functions.
+
+Attribute source form:
+
+```mcfunction
+scaledamage <targets> from <source> attribute <attribute> scale <multiplier>
+scaledamage <targets> from <source> attribute <attribute> scale <multiplier> damage_type same
+scaledamage <targets> from <source> attribute <attribute> scale <multiplier> damage_type <damage_type>
+scaledamage <targets> from <source> attribute <attribute> scale <multiplier> damage_type <damage_type> by <attacker>
+scaleheal add <targets> from <source> attribute <attribute> scale <multiplier>
+scalehunger add <players> from <source> attribute <attribute> scale <multiplier>
+scalemana add <targets> from <source> attribute <attribute> scale <multiplier>
+```
+
+Score source form:
+
+```mcfunction
+scaledamage <targets> from score <score_holder> <objective> scale <multiplier>
+scaledamage <targets> from score <score_holder> <objective> scale <multiplier> damage_type same
+scaledamage <targets> from score <score_holder> <objective> scale <multiplier> damage_type <damage_type>
+scaledamage <targets> from score <score_holder> <objective> scale <multiplier> damage_type <damage_type> by <attacker>
+scaleheal add <targets> from score <score_holder> <objective> scale <multiplier>
+scalehunger add <players> from score <score_holder> <objective> scale <multiplier>
+scalemana add <targets> from score <score_holder> <objective> scale <multiplier>
+```
+
+Examples:
+
+```mcfunction
+execute on victim run scaledamage @s from @p[limit=1,sort=nearest] attribute minecraft:generic.attack_damage scale 2
+scaleheal add @s from @s attribute minecraft:generic.max_health scale 0.25
+scalehunger add @s from score @s stamina_bonus scale -1
+```
+
+If a score holder does not have a value for the selected objective, Set Anger treats the value as `0`.
+
+When `damage_type` is omitted, or when `damage_type same` is used, `scaledamage` reuses the recent damage source from the selected target first, then from the command source entity. This is intended for advancement reward functions such as `player_hurt_entity`, where `execute on victim run scaledamage @s ...` can keep the original melee, projectile, or modded damage type.
+
+Attribute ids are resolved when the command runs. If the attribute id is unknown, or if the selected living source does not have that attribute, the command fails with a clear command error instead of crashing the server.
+
+`scalemana` is optional. If Iron's Spells 'n Spellbooks is not installed, the command stays registered but fails with a clear message instead of crashing. When available, it delegates to that mod's `mana add @s <amount>` command as each selected target.
+
+To apply a computed attribute modifier:
+
+```mcfunction
+scaleattribute <targets> <attribute> set_modifier <modifier_id> from <source> attribute <source_attribute> scale <multiplier> duration <duration>
+scaleattribute <targets> <attribute> set_modifier <modifier_id> from <source> attribute <source_attribute> scale <multiplier> operation <operation> duration <duration>
+```
+
+Score sources work here too by replacing `from <source> attribute <source_attribute>` with `from score <score_holder> <objective>`.
+
+Operations:
+
+- `addition` or `add_value`
+- `multiply_base` or `add_multiplied_base`
+- `multiply_total` or `add_multiplied_total`
+
+Durations:
+
+- `infinite`: the permanent modifier remains until another command removes or replaces it.
+- `untildeath`: the modifier is removed when the entity dies.
+- Timed values such as `200t`, `30s`, `5m`, or `1h`.
+
+Use stable modifier ids. Reusing the same `<modifier_id>` on the same attribute replaces the previous modifier instead of stacking duplicate copies.
+
+Example:
+
+```mcfunction
+scaleattribute @s minecraft:generic.attack_speed set_modifier player_skills:spell_power_increase from @s attribute irons_spellbooks:spell_power scale 0.01 operation multiply_total duration 30s
+```
+
+For generic function macros, use `scalevalue`:
+
+```mcfunction
+scalevalue <macro_name> from <source> attribute <attribute> scale <multiplier> run function <function>
+scalevalue <macro_name> from score <score_holder> <objective> scale <multiplier> run function <function>
+```
+
+The macro value is passed as a formatted number string. For example:
+
+```mcfunction
+scalevalue damage_to_do from @s attribute minecraft:generic.attack_damage scale 2 run function example:deal_scaled_damage
+```
+
+Then `example:deal_scaled_damage` can contain:
+
+```mcfunction
+$execute on victim run damage @s $(damage_to_do) minecraft:generic
+```
 
 ## Server-Side Use
 

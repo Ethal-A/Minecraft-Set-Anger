@@ -2,6 +2,7 @@ package net.stargazer.set_anger;
 
 import com.google.common.collect.Lists;
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.exceptions.DynamicCommandExceptionType;
@@ -18,6 +19,7 @@ import net.minecraft.commands.Commands;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -52,7 +54,8 @@ public final class SetAngerCommands {
         CommandDispatcher<CommandSourceStack> dispatcher = event.getDispatcher();
         dispatcher.register(createSetAngerCommand("setanger"));
         dispatcher.register(createSetAngerCommand("sa"));
-        registerExecuteOnVictim(dispatcher);
+        SetAngerScaledCommands.register(dispatcher, event.getBuildContext());
+        registerExecuteOnRelations(dispatcher);
     }
 
     private static LiteralArgumentBuilder<CommandSourceStack> createSetAngerCommand(String name) {
@@ -93,10 +96,7 @@ public final class SetAngerCommands {
         }
 
         int result = assignments.size();
-        source.sendSuccess(
-                () -> Component.literal("Set anger for " + result + " mob" + (result == 1 ? "" : "s") + "."),
-                true
-        );
+        sendDebugSuccess(source, () -> Component.literal("Set anger for " + result + " mob" + (result == 1 ? "" : "s") + "."));
         return result;
     }
 
@@ -107,10 +107,7 @@ public final class SetAngerCommands {
         }
 
         int result = subjects.size();
-        source.sendSuccess(
-                () -> Component.literal("Cleared anger for " + result + " mob" + (result == 1 ? "" : "s") + "."),
-                true
-        );
+        sendDebugSuccess(source, () -> Component.literal("Cleared anger for " + result + " mob" + (result == 1 ? "" : "s") + "."));
         return result;
     }
 
@@ -168,36 +165,84 @@ public final class SetAngerCommands {
     private record AngerAssignment(Mob subject, LivingEntity target) {
     }
 
-    private static void registerExecuteOnVictim(CommandDispatcher<CommandSourceStack> dispatcher) {
+    private static void sendDebugSuccess(CommandSourceStack source, java.util.function.Supplier<Component> message) {
+        if (SetAngerConfig.debugCommandFeedback()) {
+            source.sendSuccess(message, false);
+        }
+    }
+
+    private static List<CommandSourceStack> findTargetingSources(CommandSourceStack source, double maxDistance) {
+        Entity target = source.getEntity();
+        if (target == null) {
+            return List.of();
+        }
+
+        double maxDistanceSqr = maxDistance >= 0.0D ? maxDistance * maxDistance : -1.0D;
+        List<CommandSourceStack> sources = new ArrayList<>();
+        for (ServerLevel level : source.getServer().getAllLevels()) {
+            for (Entity entity : level.getAllEntities()) {
+                if (!(entity instanceof Mob mob) || mob.getTarget() != target) {
+                    continue;
+                }
+                if (maxDistanceSqr >= 0.0D && (mob.level() != target.level() || mob.distanceToSqr(target) > maxDistanceSqr)) {
+                    continue;
+                }
+
+                sources.add(source.withEntity(mob)
+                        .withPosition(mob.position())
+                        .withRotation(mob.getRotationVector()));
+            }
+        }
+
+        return sources;
+    }
+
+    private static void registerExecuteOnRelations(CommandDispatcher<CommandSourceStack> dispatcher) {
         CommandNode<CommandSourceStack> execute = dispatcher.getRoot().getChild("execute");
         if (execute == null) {
             return;
         }
 
         CommandNode<CommandSourceStack> on = execute.getChild("on");
-        if (on == null || on.getChild("victim") != null) {
+        if (on == null) {
             return;
         }
 
-        on.addChild(Commands.literal("victim")
-                .fork(execute, context -> {
-                    CommandSourceStack stack = context.getSource();
-                    if (!SetAngerConfig.enableExecuteOnVictim()) {
-                        return List.of();
-                    }
+        if (on.getChild("targeting") == null) {
+            on.addChild(Commands.literal("targeting")
+                    .fork(execute, context -> findTargetingSources(context.getSource(), -1.0D))
+                    .build());
+        }
+        if (on.getChild("targeting_near") == null) {
+            on.addChild(Commands.literal("targeting_near")
+                    .then(Commands.argument("max", DoubleArgumentType.doubleArg(0.0D))
+                            .fork(execute, context -> findTargetingSources(
+                                    context.getSource(),
+                                    DoubleArgumentType.getDouble(context, "max")
+                            )))
+                    .build());
+        }
+        if (on.getChild("victim") == null) {
+            on.addChild(Commands.literal("victim")
+                    .fork(execute, context -> {
+                        CommandSourceStack stack = context.getSource();
+                        if (!SetAngerConfig.enableExecuteOnVictim()) {
+                            return List.of();
+                        }
 
-                    Entity entity = stack.getEntity();
-                    if (!(entity instanceof LivingEntity livingEntity)) {
-                        return List.of();
-                    }
+                        Entity entity = stack.getEntity();
+                        if (!(entity instanceof LivingEntity livingEntity)) {
+                            return List.of();
+                        }
 
-                    LivingEntity victim = livingEntity.getLastHurtMob();
-                    if (victim == null || victim.isRemoved()) {
-                        return List.of();
-                    }
+                        LivingEntity victim = livingEntity.getLastHurtMob();
+                        if (victim == null || victim.isRemoved()) {
+                            return List.of();
+                        }
 
-                    return Lists.newArrayList(stack.withEntity(victim));
-                })
-                .build());
+                        return Lists.newArrayList(stack.withEntity(victim));
+                    })
+                    .build());
+        }
     }
 }

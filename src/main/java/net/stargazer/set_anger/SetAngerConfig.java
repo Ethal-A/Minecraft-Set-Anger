@@ -28,6 +28,7 @@ public final class SetAngerConfig {
             .toAbsolutePath()
             .normalize();
     public static final ModConfigSpec SPEC;
+    private static final ModConfigSpec.BooleanValue DEBUG_COMMAND_FEEDBACK;
     private static final ModConfigSpec.ConfigValue<List<? extends String>> HOSTILE_ENTITIES;
     private static final ModConfigSpec.ConfigValue<List<? extends String>> NEUTRAL_ENTITIES;
     private static final ModConfigSpec.ConfigValue<List<? extends String>> PASSIVE_ENTITIES;
@@ -37,6 +38,12 @@ public final class SetAngerConfig {
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
+        DEBUG_COMMAND_FEEDBACK = builder.comment(
+                        "When true, Set Anger sends success feedback for non-reload commands.",
+                        "Keep this false for datapack skills to avoid noisy chat/admin broadcasts and latest.log entries."
+                )
+                .define("debug", false);
+
         builder.comment("Advancement and execute relation helpers.").push("relations");
         UPDATE_ATTACKER_ON_BLOCKED_DAMAGE = builder.comment(
                         "When true, blocked shield damage records the attacking entity as the defender's last attacker.",
@@ -93,6 +100,11 @@ public final class SetAngerConfig {
     public static boolean enableExecuteOnVictim() {
         LoadedValues values = loadedValues;
         return values != null ? values.enableExecuteOnVictim() : getBoolean(ENABLE_EXECUTE_ON_VICTIM, true);
+    }
+
+    public static boolean debugCommandFeedback() {
+        LoadedValues values = loadedValues;
+        return values != null ? values.debugCommandFeedback() : getBoolean(DEBUG_COMMAND_FEEDBACK, false);
     }
 
     public static Path reload() {
@@ -208,6 +220,7 @@ public final class SetAngerConfig {
         HOSTILE_ENTITIES.clearCache();
         NEUTRAL_ENTITIES.clearCache();
         PASSIVE_ENTITIES.clearCache();
+        DEBUG_COMMAND_FEEDBACK.clearCache();
         UPDATE_ATTACKER_ON_BLOCKED_DAMAGE.clearCache();
         ENABLE_EXECUTE_ON_VICTIM.clearCache();
         SPEC.afterReload();
@@ -251,6 +264,7 @@ public final class SetAngerConfig {
             List<String> hostile,
             List<String> neutral,
             List<String> passive,
+            boolean debugCommandFeedback,
             boolean updateAttackerOnBlockedDamage,
             boolean enableExecuteOnVictim,
             Path path
@@ -260,6 +274,7 @@ public final class SetAngerConfig {
                     sanitizePatterns(readList(config, "entity_categories.hostile")),
                     sanitizePatterns(readList(config, "entity_categories.neutral")),
                     sanitizePatterns(readList(config, "entity_categories.passive")),
+                    readBoolean(config, "debug", false),
                     readBoolean(config, "relations.updateAttackerOnBlockedDamage", true),
                     readBoolean(config, "relations.enableExecuteOnVictim", true),
                     path
@@ -267,7 +282,7 @@ public final class SetAngerConfig {
         }
 
         private static LoadedValues defaults(Path path) {
-            return new LoadedValues(List.of(), List.of(), List.of(), true, true, path);
+            return new LoadedValues(List.of(), List.of(), List.of(), false, true, true, path);
         }
 
         private static List<String> sanitizePatterns(List<String> patterns) {
