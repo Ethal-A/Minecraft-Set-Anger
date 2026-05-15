@@ -228,6 +228,34 @@ This uses the mob's live `getTarget()` value, so it works with vanilla AI, `/set
 
 Set Anger also adds server-side commands for datapacks that need to use a live attribute or score value directly in an effect. These commands require permission level 2 and work well inside advancement reward functions.
 
+Direct health and hunger commands:
+
+```mcfunction
+heal <targets> add <amount>
+heal <targets> multiply_current <factor>
+heal <targets> multiply_total <factor>
+hunger <targets> add <amount>
+hunger <targets> multiply_current <factor>
+hunger <targets> multiply_total <factor>
+```
+
+Examples:
+
+```mcfunction
+heal @s add 10
+heal @s add -10
+heal @s multiply_current 0.5
+heal @s multiply_total 0.5
+heal @s multiply_current -0.25
+hunger @s add 6
+hunger @s multiply_current -0.25
+hunger @s multiply_total 0.5
+```
+
+For `heal`, positive values heal and negative values deal generic damage. `multiply_current` uses the entity's current health as the base, so an entity at 6 health with `heal @s multiply_current 0.5` gains 3 health. `multiply_total` uses the entity's current maximum health as the base, so an entity at 6 health with 20 maximum health and `heal @s multiply_total 0.5` gains 10 health. Healing is still capped by the entity's current maximum health.
+
+For `hunger`, positive values increase food level and negative values decrease it. `multiply_current` uses the player's current food level as the base. `multiply_total` uses the vanilla food cap of 20 as the base. If the selected entity does not have health or hunger, the command fails with a clear command error instead of crashing the server.
+
 Attribute source form:
 
 ```mcfunction
@@ -236,7 +264,7 @@ scaledamage <targets> from <source> attribute <attribute> scale <multiplier> dam
 scaledamage <targets> from <source> attribute <attribute> scale <multiplier> damage_type <damage_type>
 scaledamage <targets> from <source> attribute <attribute> scale <multiplier> damage_type <damage_type> by <attacker>
 scaleheal add <targets> from <source> attribute <attribute> scale <multiplier>
-scalehunger add <players> from <source> attribute <attribute> scale <multiplier>
+scalehunger add <targets> from <source> attribute <attribute> scale <multiplier>
 scalemana add <targets> from <source> attribute <attribute> scale <multiplier>
 ```
 
@@ -248,7 +276,7 @@ scaledamage <targets> from score <score_holder> <objective> scale <multiplier> d
 scaledamage <targets> from score <score_holder> <objective> scale <multiplier> damage_type <damage_type>
 scaledamage <targets> from score <score_holder> <objective> scale <multiplier> damage_type <damage_type> by <attacker>
 scaleheal add <targets> from score <score_holder> <objective> scale <multiplier>
-scalehunger add <players> from score <score_holder> <objective> scale <multiplier>
+scalehunger add <targets> from score <score_holder> <objective> scale <multiplier>
 scalemana add <targets> from score <score_holder> <objective> scale <multiplier>
 ```
 
@@ -273,15 +301,17 @@ To apply a computed attribute modifier:
 ```mcfunction
 scaleattribute <targets> <attribute> set_modifier <modifier_id> from <source> attribute <source_attribute> scale <multiplier> duration <duration>
 scaleattribute <targets> <attribute> set_modifier <modifier_id> from <source> attribute <source_attribute> scale <multiplier> operation <operation> duration <duration>
+scaleattribute <targets> <attribute> set_modifier <modifier_id> value <amount> duration <duration>
+scaleattribute <targets> <attribute> set_modifier <modifier_id> value <amount> operation <operation> duration <duration>
 ```
 
 Score sources work here too by replacing `from <source> attribute <source_attribute>` with `from score <score_holder> <objective>`.
 
 Operations:
 
-- `addition` or `add_value`
-- `multiply_base` or `add_multiplied_base`
-- `multiply_total` or `add_multiplied_total`
+- `addition`: adds the computed value directly to the attribute value.
+- `multiply_base`: adds `base attribute value * computed value`.
+- `multiply_total`: multiplies the final attribute value by `1 + computed value`.
 
 Durations:
 
@@ -295,6 +325,8 @@ Example:
 
 ```mcfunction
 scaleattribute @s minecraft:generic.attack_speed set_modifier player_skills:spell_power_increase from @s attribute irons_spellbooks:spell_power scale 0.01 operation multiply_total duration 30s
+scaleattribute @s minecraft:generic.attack_speed set_modifier player_skills:increased_attack_speed value 0.5 operation multiply_total duration 30s
+scaleattribute @s minecraft:generic.attack_speed set_modifier player_skills:reduced_attack_speed value -0.5 operation multiply_total duration 30s
 ```
 
 For generic function macros, use `scalevalue`:
@@ -322,4 +354,4 @@ Set Anger is intended to run on the server. The mod metadata uses `IGNORE_SERVER
 
 ## License
 
-This project is licensed under the `MIT` License.
+`MIT`

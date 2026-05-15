@@ -6,6 +6,7 @@ import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.ArgumentBuilder;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.exceptions.DynamicCommandExceptionType;
@@ -20,6 +21,7 @@ import net.minecraft.commands.CommandResultCallback;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.FunctionInstantiationException;
+import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.arguments.ObjectiveArgument;
 import net.minecraft.commands.arguments.ResourceArgument;
@@ -42,15 +44,25 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.Attribute;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.food.FoodData;
 import net.minecraft.world.scores.Objective;
 import net.minecraft.world.scores.ReadOnlyScoreInfo;
 import net.minecraft.world.scores.ScoreHolder;
 
 public final class SetAngerScaledCommands {
     private static final double MAX_ABSOLUTE_VALUE = 1_000_000.0D;
+    private static final int VANILLA_MAX_FOOD_LEVEL = 20;
+    private static final String[] OPERATION_SUGGESTIONS = {"addition", "multiply_base", "multiply_total"};
+    private static final String[] DURATION_SUGGESTIONS = {"30s", "1m", "5m", "1h", "untildeath", "infinite"};
 
     private static final DynamicCommandExceptionType ERROR_NOT_LIVING = new DynamicCommandExceptionType(
             name -> Component.literal(name + " is not a living entity.")
+    );
+    private static final DynamicCommandExceptionType ERROR_NO_HEALTH = new DynamicCommandExceptionType(
+            name -> Component.literal(name + " does not have health.")
+    );
+    private static final DynamicCommandExceptionType ERROR_NO_HUNGER = new DynamicCommandExceptionType(
+            name -> Component.literal(name + " does not have hunger.")
     );
     private static final Dynamic2CommandExceptionType ERROR_ATTRIBUTE_MISSING = new Dynamic2CommandExceptionType(
             (entity, attribute) -> Component.literal(entity + " does not have attribute " + attribute + ".")
@@ -84,12 +96,68 @@ public final class SetAngerScaledCommands {
     }
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher, CommandBuildContext buildContext) {
+        dispatcher.register(createHealCommand());
+        dispatcher.register(createHungerCommand());
         dispatcher.register(createScaleDamageCommand(buildContext));
         dispatcher.register(createScaleHealCommand(buildContext));
         dispatcher.register(createScaleHungerCommand(buildContext));
         dispatcher.register(createScaleManaCommand(buildContext));
         dispatcher.register(createScaleAttributeCommand(buildContext));
         dispatcher.register(createScaleValueCommand(buildContext));
+    }
+
+    private static LiteralArgumentBuilder<CommandSourceStack> createHealCommand() {
+        return Commands.literal("heal")
+                .requires(source -> source.hasPermission(2))
+                .then(Commands.argument("targets", EntityArgument.entities())
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("amount", DoubleArgumentType.doubleArg())
+                                        .executes(context -> applyHealthCommand(
+                                                context,
+                                                DoubleArgumentType.getDouble(context, "amount"),
+                                                HealthMode.ADD
+                                        ))))
+                        .then(Commands.literal("multiply_current")
+                                .then(Commands.argument("factor", DoubleArgumentType.doubleArg())
+                                        .executes(context -> applyHealthCommand(
+                                                context,
+                                                DoubleArgumentType.getDouble(context, "factor"),
+                                                HealthMode.MULTIPLY_CURRENT
+                                        ))))
+                        .then(Commands.literal("multiply_total")
+                                .then(Commands.argument("factor", DoubleArgumentType.doubleArg())
+                                        .executes(context -> applyHealthCommand(
+                                                context,
+                                                DoubleArgumentType.getDouble(context, "factor"),
+                                                HealthMode.MULTIPLY_TOTAL
+                                        )))));
+    }
+
+    private static LiteralArgumentBuilder<CommandSourceStack> createHungerCommand() {
+        return Commands.literal("hunger")
+                .requires(source -> source.hasPermission(2))
+                .then(Commands.argument("targets", EntityArgument.entities())
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("amount", DoubleArgumentType.doubleArg())
+                                        .executes(context -> applyHungerCommand(
+                                                context,
+                                                DoubleArgumentType.getDouble(context, "amount"),
+                                                HungerMode.ADD
+                                        ))))
+                        .then(Commands.literal("multiply_current")
+                                .then(Commands.argument("factor", DoubleArgumentType.doubleArg())
+                                        .executes(context -> applyHungerCommand(
+                                                context,
+                                                DoubleArgumentType.getDouble(context, "factor"),
+                                                HungerMode.MULTIPLY_CURRENT
+                                        ))))
+                        .then(Commands.literal("multiply_total")
+                                .then(Commands.argument("factor", DoubleArgumentType.doubleArg())
+                                        .executes(context -> applyHungerCommand(
+                                                context,
+                                                DoubleArgumentType.getDouble(context, "factor"),
+                                                HungerMode.MULTIPLY_TOTAL
+                                        )))));
     }
 
     private static LiteralArgumentBuilder<CommandSourceStack> createScaleDamageCommand(CommandBuildContext buildContext) {
@@ -112,7 +180,7 @@ public final class SetAngerScaledCommands {
         return Commands.literal("scalehunger")
                 .requires(source -> source.hasPermission(2))
                 .then(Commands.literal("add")
-                        .then(Commands.argument("targets", EntityArgument.players())
+                        .then(Commands.argument("targets", EntityArgument.entities())
                                 .then(valueBranches(buildContext, () -> Commands.argument("scale", DoubleArgumentType.doubleArg())
                                         .executes(SetAngerScaledCommands::scaleHunger)))));
     }
@@ -130,18 +198,24 @@ public final class SetAngerScaledCommands {
         return Commands.literal("scaleattribute")
                 .requires(source -> source.hasPermission(2))
                 .then(Commands.argument("targets", EntityArgument.entities())
-                        .then(Commands.argument("attribute", ResourceLocationArgument.id())
+                        .then(attributeArgument("attribute")
                                 .then(Commands.literal("set_modifier")
                                         .then(Commands.argument("modifier", ResourceLocationArgument.id())
-                                                .then(valueBranches(buildContext, () -> Commands.argument("scale", DoubleArgumentType.doubleArg())
-                                                        .then(Commands.literal("duration")
-                                                                .then(Commands.argument("duration", StringArgumentType.word())
-                                                                        .executes(context -> scaleAttribute(context, AttributeModifier.Operation.ADD_VALUE))))
-                                                        .then(Commands.literal("operation")
-                                                                .then(Commands.argument("operation", StringArgumentType.word())
-                                                                        .then(Commands.literal("duration")
-                                                                                .then(Commands.argument("duration", StringArgumentType.word())
-                                                                                        .executes(context -> scaleAttribute(context, parseOperation(StringArgumentType.getString(context, "operation"))))))))))))));
+                                                .then(valueBranches(buildContext, () -> scaleAttributeAmountArgument("scale")))
+                                                .then(Commands.literal("value")
+                                                        .then(scaleAttributeAmountArgument("value")))))));
+    }
+
+    private static ArgumentBuilder<CommandSourceStack, ?> scaleAttributeAmountArgument(String argumentName) {
+        return Commands.argument(argumentName, DoubleArgumentType.doubleArg())
+                .then(Commands.literal("duration")
+                        .then(durationArgument()
+                                .executes(context -> scaleAttribute(context, AttributeModifier.Operation.ADD_VALUE))))
+                .then(Commands.literal("operation")
+                        .then(operationArgument()
+                                .then(Commands.literal("duration")
+                                        .then(durationArgument()
+                                                .executes(context -> scaleAttribute(context, parseOperation(StringArgumentType.getString(context, "operation"))))))));
     }
 
     private static LiteralArgumentBuilder<CommandSourceStack> createScaleValueCommand(CommandBuildContext buildContext) {
@@ -162,11 +236,12 @@ public final class SetAngerScaledCommands {
         return Commands.literal("from")
                         .then(Commands.argument("source", EntityArgument.entity())
                         .then(Commands.literal("attribute")
-                                .then(Commands.argument("source_attribute", ResourceLocationArgument.id())
+                                .then(attributeArgument("source_attribute")
                                         .then(Commands.literal("scale")
                                                 .then(afterScale.get())))))
                 .then(Commands.literal("score")
                         .then(Commands.argument("score_holder", ScoreHolderArgument.scoreHolder())
+                                .suggests(ScoreHolderArgument.SUGGEST_SCORE_HOLDERS)
                                 .then(Commands.argument("objective", ObjectiveArgument.objective())
                                         .then(Commands.literal("scale")
                                                 .then(afterScale.get())))));
@@ -260,8 +335,8 @@ public final class SetAngerScaledCommands {
     private static int scaleHunger(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
         int amount = Mth.floor(computeValue(context));
         int changed = 0;
-        for (Player player : EntityArgument.getPlayers(context, "targets")) {
-            player.getFoodData().setFoodLevel(Mth.clamp(player.getFoodData().getFoodLevel() + amount, 0, 20));
+        for (Entity entity : EntityArgument.getEntities(context, "targets")) {
+            applyHungerDelta(entity, amount);
             changed++;
         }
 
@@ -293,7 +368,7 @@ public final class SetAngerScaledCommands {
     }
 
     private static int scaleAttribute(CommandContext<CommandSourceStack> context, AttributeModifier.Operation operation) throws CommandSyntaxException {
-        double amount = computeValue(context);
+        double amount = computeAttributeModifierAmount(context);
         Holder.Reference<Attribute> attribute = resolveAttribute(ResourceLocationArgument.getId(context, "attribute"));
         ResourceLocation modifierId = ResourceLocationArgument.getId(context, "modifier");
         SetAngerScaledModifiers.ModifierDuration duration = parseDuration(StringArgumentType.getString(context, "duration"));
@@ -315,6 +390,91 @@ public final class SetAngerScaledCommands {
         int result = changed;
         sendDebugSuccess(context.getSource(), () -> Component.literal("Applied scaled attribute modifier to " + result + " target" + (result == 1 ? "" : "s") + "."));
         return changed;
+    }
+
+    private static int applyHealthCommand(CommandContext<CommandSourceStack> context, double value, HealthMode mode) throws CommandSyntaxException {
+        checkedFiniteBounded(value);
+        int changed = 0;
+        for (Entity entity : EntityArgument.getEntities(context, "targets")) {
+            LivingEntity livingEntity = livingEntityWithHealth(entity);
+            double delta = switch (mode) {
+                case ADD -> value;
+                case MULTIPLY_CURRENT -> livingEntity.getHealth() * value;
+                case MULTIPLY_TOTAL -> livingEntity.getMaxHealth() * value;
+            };
+            applyHealthDelta(livingEntity, checkedFiniteBounded(delta));
+            changed++;
+        }
+
+        int result = changed;
+        sendDebugSuccess(context.getSource(), () -> Component.literal("Adjusted health for " + result + " target" + (result == 1 ? "" : "s") + "."));
+        return changed;
+    }
+
+    private static int applyHungerCommand(CommandContext<CommandSourceStack> context, double value, HungerMode mode) throws CommandSyntaxException {
+        checkedFiniteBounded(value);
+        int changed = 0;
+        for (Entity entity : EntityArgument.getEntities(context, "targets")) {
+            FoodData foodData = foodData(entity);
+            double delta = switch (mode) {
+                case ADD -> value;
+                case MULTIPLY_CURRENT -> foodData.getFoodLevel() * value;
+                case MULTIPLY_TOTAL -> VANILLA_MAX_FOOD_LEVEL * value;
+            };
+            applyHungerDelta(entity, Mth.floor(checkedFiniteBounded(delta)));
+            changed++;
+        }
+
+        int result = changed;
+        sendDebugSuccess(context.getSource(), () -> Component.literal("Adjusted hunger for " + result + " target" + (result == 1 ? "" : "s") + "."));
+        return changed;
+    }
+
+    private static LivingEntity livingEntityWithHealth(Entity entity) throws CommandSyntaxException {
+        if (!(entity instanceof LivingEntity livingEntity)) {
+            throw ERROR_NO_HEALTH.create(entity.getDisplayName().getString());
+        }
+        return livingEntity;
+    }
+
+    private static void applyHealthDelta(LivingEntity livingEntity, double delta) throws CommandSyntaxException {
+        float amount = (float) Math.abs(delta);
+        try {
+            if (delta >= 0.0D) {
+                livingEntity.heal(amount);
+            } else {
+                livingEntity.hurt(livingEntity.damageSources().generic(), amount);
+            }
+        } catch (RuntimeException exception) {
+            throw ERROR_NO_HEALTH.create(livingEntity.getDisplayName().getString());
+        }
+    }
+
+    private static FoodData foodData(Entity entity) throws CommandSyntaxException {
+        if (!(entity instanceof Player player)) {
+            throw ERROR_NO_HUNGER.create(entity.getDisplayName().getString());
+        }
+
+        try {
+            FoodData foodData = player.getFoodData();
+            if (foodData == null) {
+                throw ERROR_NO_HUNGER.create(entity.getDisplayName().getString());
+            }
+            return foodData;
+        } catch (CommandSyntaxException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            throw ERROR_NO_HUNGER.create(entity.getDisplayName().getString());
+        }
+    }
+
+    private static void applyHungerDelta(Entity entity, int amount) throws CommandSyntaxException {
+        FoodData foodData = foodData(entity);
+        try {
+            foodData.setFoodLevel(Mth.clamp(foodData.getFoodLevel() + amount, 0, VANILLA_MAX_FOOD_LEVEL));
+        } catch (RuntimeException exception) {
+            throw ERROR_NO_HUNGER.create(entity.getDisplayName().getString());
+        }
     }
 
     private static int runFunctionWithScaledValue(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
@@ -369,6 +529,13 @@ public final class SetAngerScaledCommands {
         return value;
     }
 
+    private static double computeAttributeModifierAmount(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        if (hasArgument(context, "value")) {
+            return checkedFiniteBounded(DoubleArgumentType.getDouble(context, "value"));
+        }
+        return computeValue(context);
+    }
+
     private static Holder.Reference<Attribute> resolveAttribute(ResourceLocation attributeId) throws CommandSyntaxException {
         return BuiltInRegistries.ATTRIBUTE.getHolder(attributeId)
                 .orElseThrow(() -> ERROR_UNKNOWN_ATTRIBUTE.create(attributeId));
@@ -376,11 +543,26 @@ public final class SetAngerScaledCommands {
 
     private static AttributeModifier.Operation parseOperation(String value) throws CommandSyntaxException {
         return switch (value.toLowerCase(Locale.ROOT)) {
-            case "addition", "add", "add_value" -> AttributeModifier.Operation.ADD_VALUE;
-            case "multiply_base", "add_multiplied_base" -> AttributeModifier.Operation.ADD_MULTIPLIED_BASE;
-            case "multiply_total", "add_multiplied_total" -> AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL;
+            case "addition" -> AttributeModifier.Operation.ADD_VALUE;
+            case "multiply_base" -> AttributeModifier.Operation.ADD_MULTIPLIED_BASE;
+            case "multiply_total" -> AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL;
             default -> throw ERROR_BAD_OPERATION.create(value);
         };
+    }
+
+    private static RequiredArgumentBuilder<CommandSourceStack, ResourceLocation> attributeArgument(String name) {
+        return Commands.argument(name, ResourceLocationArgument.id())
+                .suggests((context, builder) -> SharedSuggestionProvider.suggestResource(BuiltInRegistries.ATTRIBUTE.keySet(), builder));
+    }
+
+    private static RequiredArgumentBuilder<CommandSourceStack, String> operationArgument() {
+        return Commands.argument("operation", StringArgumentType.word())
+                .suggests((context, builder) -> SharedSuggestionProvider.suggest(OPERATION_SUGGESTIONS, builder));
+    }
+
+    private static RequiredArgumentBuilder<CommandSourceStack, String> durationArgument() {
+        return Commands.argument("duration", StringArgumentType.word())
+                .suggests((context, builder) -> SharedSuggestionProvider.suggest(DURATION_SUGGESTIONS, builder));
     }
 
     private static SetAngerScaledModifiers.ModifierDuration parseDuration(String value) throws CommandSyntaxException {
@@ -425,6 +607,13 @@ public final class SetAngerScaledCommands {
         return (float) value;
     }
 
+    private static double checkedFiniteBounded(double value) throws CommandSyntaxException {
+        if (!Double.isFinite(value) || Math.abs(value) > MAX_ABSOLUTE_VALUE) {
+            throw ERROR_BAD_VALUE.create(formatValue(value));
+        }
+        return value;
+    }
+
     private static String formatValue(double value) {
         if (value == Math.rint(value)) {
             return String.format(Locale.ROOT, "%.0f", value);
@@ -450,6 +639,18 @@ public final class SetAngerScaledCommands {
     private enum DamageTypeMode {
         SAME,
         EXPLICIT
+    }
+
+    private enum HealthMode {
+        ADD,
+        MULTIPLY_CURRENT,
+        MULTIPLY_TOTAL
+    }
+
+    private enum HungerMode {
+        ADD,
+        MULTIPLY_CURRENT,
+        MULTIPLY_TOTAL
     }
 
 }
