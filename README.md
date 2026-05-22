@@ -224,6 +224,35 @@ execute as @a run execute on targeting_near 16 run damage @s 2 minecraft:generic
 
 This uses the mob's live `getTarget()` value, so it works with vanilla AI, `/setanger`, and other mods that set the mob's normal AI target.
 
+## Scheduled Entity Commands
+
+Set Anger adds `scheduleas` for delayed commands that should run later from the perspective of an entity:
+
+```mcfunction
+scheduleas <subjects> clear
+scheduleas <subjects> <time> append run <command>
+scheduleas <subjects> <time> replace run <command>
+scheduleas <subjects> <time> append at <target_selector> run <command>
+scheduleas <subjects> <time> replace at <target_selector> run <command>
+scheduleas <subjects> <time> append do_not_clear_on_death run <command>
+```
+
+Examples:
+
+```mcfunction
+scheduleas @s clear
+scheduleas @e[type=minecraft:zombie,limit=1,sort=nearest] 10s append run damage @s 10 minecraft:generic
+scheduleas @s 30s replace at @s run summon minecraft:wolf
+scheduleas @e[type=minecraft:wolf,limit=1,sort=nearest] 1m append at @s run function some_function
+scheduleas @s 30s append do_not_clear_on_death run function some_function
+```
+
+`append` adds another scheduled command for the selected entity. `replace` clears that entity's existing `scheduleas` tasks before adding the new one. `clear` removes all pending `scheduleas` tasks for the selected entity.
+
+The scheduled command only runs if the scheduled entity is loaded and alive when the delay expires. For players, schedules normally clear on death. `do_not_clear_on_death` keeps the task after player death, but the player must still be online when the task runs. This option is ignored for non-player entities.
+
+`at <target_selector>` is evaluated when the task runs. Because the scheduled command source is the scheduled entity, `at @s` means "at the scheduled entity" at execution time.
+
 ## Scaled Skill Commands
 
 Set Anger also adds server-side commands for datapacks that need to use a live attribute or score value directly in an effect. These commands require permission level 2 and work well inside advancement reward functions.

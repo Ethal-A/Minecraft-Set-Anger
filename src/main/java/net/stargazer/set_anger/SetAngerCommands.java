@@ -55,6 +55,7 @@ public final class SetAngerCommands {
         dispatcher.register(createSetAngerCommand("setanger"));
         dispatcher.register(createSetAngerCommand("sa"));
         SetAngerScaledCommands.register(dispatcher, event.getBuildContext());
+        SetAngerScheduleCommands.register(dispatcher);
         registerExecuteOnRelations(dispatcher);
     }
 
